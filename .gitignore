@@ -1,0 +1,35 @@
+# Python environments
+.venv/
+venv/
+.venv-stable/
+ENV/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE/editor
+.idea/
+.vscode/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+*.dmg
+
+# Runtime local data
+lma_library.sqlite
+lma_library.sqlite-shm
+lma_library.sqlite-wal
+lma_config_v2.json
+
+# Misc
+.DS_Store
+.Rhistory
+
+# Historical packaged files
+images/LMA_v0.0.1.app/
+images/LMA_v0.0.1.zip
