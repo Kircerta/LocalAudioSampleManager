@@ -26,9 +26,10 @@ from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QWidget, QVBoxLayout, QPushButton, QFileDialog,
                              QLineEdit, QLabel, QHBoxLayout, QRadioButton, QButtonGroup,
                              QSlider, QMenu, QTableWidget, QTableWidgetItem, QHeaderView,
-                             QDialog, QTabWidget, QMessageBox, QAbstractItemView)
-from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer, QThread, pyqtSignal, QStandardPaths
-from PyQt6.QtGui import QDrag, QFont, QIcon, QAction, QColor
+                             QDialog, QTabWidget, QMessageBox, QAbstractItemView, QFormLayout,
+                             QComboBox, QSpinBox, QCheckBox, QFrame, QAbstractSpinBox)
+from PyQt6.QtCore import Qt, QUrl, QMimeData, QTimer, QThread, pyqtSignal, QStandardPaths, QEvent
+from PyQt6.QtGui import QDrag, QFont, QIcon, QAction, QColor, QPalette, QDesktopServices
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
 
 # Import Parsers
@@ -164,7 +165,8 @@ class DatabaseManager:
             if data_tuples:
                 self.conn.executemany(sql, data_tuples)
 
-    def search_samples(self, keywords, bpm_min, bpm_max, key, form, show_favorites_only):
+    def search_samples(self, keywords, bpm_min, bpm_max, key, form, show_favorites_only, limit=2000):
+        limit = max(100, min(int(limit), 20000))
         query = "SELECT * FROM samples WHERE 1=1"
         params = []
 
@@ -196,10 +198,12 @@ class DatabaseManager:
         if show_favorites_only:
             query += " AND is_favorite = 1"
 
-        query += " ORDER BY filename LIMIT 2000"
+        query += " ORDER BY filename LIMIT ?"
+        params.append(limit)
         return [dict(row) for row in self.conn.execute(query, params).fetchall()]
 
-    def search_midi(self, keywords, bpm_min, bpm_max, key, show_favorites_only):
+    def search_midi(self, keywords, bpm_min, bpm_max, key, show_favorites_only, limit=2000):
+        limit = max(100, min(int(limit), 20000))
         query = "SELECT * FROM midi WHERE 1=1"
         params = []
 
@@ -227,7 +231,8 @@ class DatabaseManager:
         if show_favorites_only:
             query += " AND is_favorite = 1"
 
-        query += " ORDER BY filename LIMIT 2000"
+        query += " ORDER BY filename LIMIT ?"
+        params.append(limit)
         return [dict(row) for row in self.conn.execute(query, params).fetchall()]
 
     def toggle_favorite(self, table, path):
@@ -322,27 +327,93 @@ class DraggableTableWidget(QTableWidget):
         QTimer.singleShot(5000, cleanup_temp_file)
 
 
-class InfoDialog(QDialog):
+class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("About")
-        self.setFixedSize(400, 300)
-        layout = QVBoxLayout()
-        message_text = """
-        <h3>LMA</h3>
-        <p>Local Audio Sample Manager</p>
-        <p><b>Version:</b> {version}</p>
-        <p>PyQt6 / SQLite / Native Audio</p>
-        <p><a href="{github}">GitHub Repository</a></p>
-        <p><b>Developer:</b> Zixiang Zhang (Alexxon)</p>
-        """.format(version=APP_VERSION, github=APP_GITHUB_URL)
-        lbl = QLabel(message_text)
-        lbl.setOpenExternalLinks(True)
-        btn = QPushButton("OK")
-        btn.clicked.connect(self.accept)
-        layout.addWidget(lbl)
-        layout.addWidget(btn)
-        self.setLayout(layout)
+        self.parent_app = parent
+        self.setWindowTitle("Settings")
+        self.setMinimumWidth(520)
+
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        form.setFormAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        form.setHorizontalSpacing(18)
+        form.setVerticalSpacing(10)
+
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("Follow System", "system")
+        self.theme_combo.addItem("Light", "light")
+        self.theme_combo.addItem("Dark", "dark")
+        current_theme_index = max(0, self.theme_combo.findData(self.parent_app.theme_mode))
+        self.theme_combo.setCurrentIndex(current_theme_index)
+
+        self.max_results_spin = QSpinBox()
+        self.max_results_spin.setRange(100, 20000)
+        self.max_results_spin.setSingleStep(100)
+        self.max_results_spin.setValue(self.parent_app.max_results)
+        self.max_results_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+
+        self.default_volume_spin = QSpinBox()
+        self.default_volume_spin.setRange(0, 100)
+        self.default_volume_spin.setValue(self.parent_app.volume_slider.value())
+        self.default_volume_spin.setSuffix("%")
+        self.default_volume_spin.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+
+        self.hide_title_checkbox = QCheckBox("Hide title text in macOS title bar")
+        self.hide_title_checkbox.setChecked(self.parent_app.hide_title_text)
+        if sys.platform != "darwin":
+            self.hide_title_checkbox.setEnabled(False)
+
+        open_data_btn = QPushButton("Open Data Folder")
+        open_data_btn.clicked.connect(self.open_data_folder)
+
+        form.addRow("Theme", self.theme_combo)
+        form.addRow("Max Search Results", self.max_results_spin)
+        form.addRow("Default Preview Volume", self.default_volume_spin)
+        form.addRow("Window", self.hide_title_checkbox)
+        form.addRow("Data", open_data_btn)
+        layout.addLayout(form)
+
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setFrameShadow(QFrame.Shadow.Sunken)
+        layout.addWidget(separator)
+
+        about_label = QLabel(
+            """
+            <h3>LMA</h3>
+            <p><b>Version:</b> {version}</p>
+            <p>Local Audio Sample Manager</p>
+            <p>PyQt6 / SQLite / Native Audio</p>
+            <p><a href="{github}">GitHub Repository</a></p>
+            <p><b>Developer:</b> Zixiang Zhang (Alexxon)</p>
+            """.format(version=APP_VERSION, github=APP_GITHUB_URL)
+        )
+        about_label.setOpenExternalLinks(True)
+        about_label.setWordWrap(True)
+        layout.addWidget(about_label)
+
+        button_row = QHBoxLayout()
+        button_row.addStretch()
+        cancel_btn = QPushButton("Cancel")
+        save_btn = QPushButton("Save")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn.clicked.connect(self.accept)
+        button_row.addWidget(cancel_btn)
+        button_row.addWidget(save_btn)
+        layout.addLayout(button_row)
+
+    def open_data_folder(self):
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.parent_app.app_data_dir)))
+
+    def get_settings(self):
+        return {
+            "theme_mode": self.theme_combo.currentData(),
+            "max_results": self.max_results_spin.value(),
+            "default_volume": self.default_volume_spin.value(),
+            "hide_title_text": self.hide_title_checkbox.isChecked(),
+        }
 
 
 # --- Main Application ---
@@ -363,6 +434,11 @@ class SampleManagerApp(QWidget):
         # 3. Config State
         self.selected_sample_folder = ''
         self.selected_midi_folder = ''
+        self.theme_mode = "system"
+        self.max_results = 2000
+        self.hide_title_text = True
+        self._is_applying_style = False
+        self._active_style_mode = None
 
         # 4. Audio Engine (PyQt6)
         self.player = QMediaPlayer()
@@ -378,8 +454,9 @@ class SampleManagerApp(QWidget):
         if icon_path.exists():
             self.setWindowIcon(QIcon(str(icon_path)))
 
-        self.setWindowTitle("LMA")
+        self._apply_window_title_visibility()
         self.init_ui()
+        self.apply_visual_style()
 
         # 6. Load State
         self.load_config()
@@ -402,8 +479,16 @@ class SampleManagerApp(QWidget):
         if not self.config_file.exists() and legacy_config.exists():
             shutil.copy2(legacy_config, self.config_file)
 
+    def _apply_window_title_visibility(self):
+        if sys.platform == "darwin" and self.hide_title_text:
+            self.setWindowTitle("")
+        else:
+            self.setWindowTitle("LMA")
+
     def init_ui(self):
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(14, 14, 14, 14)
+        main_layout.setSpacing(10)
         self.tabs = QTabWidget()
 
         # Tabs
@@ -423,18 +508,353 @@ class SampleManagerApp(QWidget):
         self.volume_slider.setValue(80)
         self.volume_slider.valueChanged.connect(self.set_volume)
 
-        about_btn = QPushButton("About")
-        about_btn.setFixedWidth(80)
-        about_btn.clicked.connect(lambda: InfoDialog(self).exec())
+        settings_btn = QPushButton("Settings")
+        settings_btn.setFixedWidth(100)
+        settings_btn.clicked.connect(self.open_settings)
 
         bottom_layout.addWidget(vol_label)
         bottom_layout.addWidget(self.volume_slider, 1)
-        bottom_layout.addWidget(about_btn)
+        bottom_layout.addWidget(settings_btn)
 
         main_layout.addLayout(bottom_layout)
         self.setLayout(main_layout)
 
         self.set_volume(80)
+
+    def apply_visual_style(self, force=False):
+        if self._is_applying_style:
+            return
+
+        dark_mode = self._is_dark_mode()
+        target_mode = "dark" if dark_mode else "light"
+        if not force and self._active_style_mode == target_mode:
+            return
+
+        self._is_applying_style = True
+        try:
+            if dark_mode:
+                self.setStyleSheet(self._build_dark_stylesheet())
+            else:
+                self.setStyleSheet(self._build_light_stylesheet())
+            self._active_style_mode = target_mode
+        finally:
+            self._is_applying_style = False
+
+    def _is_dark_mode(self):
+        if self.theme_mode == "dark":
+            return True
+        if self.theme_mode == "light":
+            return False
+        palette = QApplication.instance().palette()
+        window_color = palette.color(QPalette.ColorRole.Window)
+        return window_color.lightness() < 128
+
+    def _build_light_stylesheet(self):
+        return """
+            QWidget {
+                background: #eceef2;
+                color: #101418;
+                font-family: "SF Pro Text", "Helvetica Neue", "PingFang SC", sans-serif;
+                font-size: 13px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d8dee6;
+                border-radius: 10px;
+                background: #ffffff;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #e9edf2;
+                border: 1px solid #d8dee6;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                min-width: 110px;
+                padding: 8px 14px;
+                margin-right: 4px;
+                color: #2e3a46;
+                font-weight: 500;
+            }
+            QTabBar::tab:selected {
+                background: #ffffff;
+                color: #0f1720;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #dfe6ee;
+            }
+            QLabel {
+                background: transparent;
+            }
+            QLineEdit {
+                background: #ffffff;
+                border: 1px solid #d0d7e0;
+                border-radius: 8px;
+                padding: 7px 10px;
+                selection-background-color: #2b6de0;
+                selection-color: #ffffff;
+            }
+            QLineEdit:focus {
+                border: 1px solid #2b6de0;
+            }
+            QComboBox, QSpinBox {
+                background: #ffffff;
+                border: 1px solid #d0d7e0;
+                border-radius: 8px;
+                padding: 6px 10px;
+            }
+            QComboBox:focus, QSpinBox:focus {
+                border: 1px solid #2b6de0;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QCheckBox {
+                color: #1c2630;
+                spacing: 7px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QPushButton {
+                background: #2b6de0;
+                border: 1px solid #235bc0;
+                border-radius: 8px;
+                color: #ffffff;
+                padding: 7px 14px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #2f76f2;
+            }
+            QPushButton:pressed {
+                background: #245ec2;
+            }
+            QRadioButton {
+                spacing: 7px;
+                color: #1c2630;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 1px solid #a8b5c4;
+                background: #ffffff;
+            }
+            QRadioButton::indicator:checked {
+                border: 1px solid #2b6de0;
+                background: #2b6de0;
+            }
+            QSlider::groove:horizontal {
+                border: none;
+                height: 4px;
+                background: #cad3de;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #2b6de0;
+                border: 1px solid #245ec2;
+                width: 15px;
+                margin: -6px 0;
+                border-radius: 7px;
+            }
+            QTableWidget {
+                background: #ffffff;
+                border: 1px solid #d8dee6;
+                border-radius: 8px;
+                gridline-color: #edf1f5;
+                alternate-background-color: #f8fafc;
+                selection-background-color: #dbe8ff;
+                selection-color: #0f1720;
+            }
+            QHeaderView::section {
+                background: #eef2f6;
+                color: #25303b;
+                border: none;
+                border-bottom: 1px solid #d8dee6;
+                border-right: 1px solid #e2e8ef;
+                padding: 6px;
+                font-weight: 600;
+            }
+            QMenu {
+                background: #ffffff;
+                border: 1px solid #d8dee6;
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                border-radius: 6px;
+            }
+            QMenu::item:selected {
+                background: #e8f0ff;
+                color: #0f1720;
+            }
+        """
+
+    def _build_dark_stylesheet(self):
+        return """
+            QWidget {
+                background: #1e1f27;
+                color: #e5ebf2;
+                font-family: "SF Pro Text", "Helvetica Neue", "PingFang SC", sans-serif;
+                font-size: 13px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #2e3640;
+                border-radius: 10px;
+                background: #1d2229;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background: #252c35;
+                border: 1px solid #323b47;
+                border-bottom: none;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                min-width: 110px;
+                padding: 8px 14px;
+                margin-right: 4px;
+                color: #aeb8c5;
+                font-weight: 500;
+            }
+            QTabBar::tab:selected {
+                background: #1d2229;
+                color: #f3f7fc;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover:!selected {
+                background: #2a3240;
+            }
+            QLabel {
+                background: transparent;
+                color: #d6dde6;
+            }
+            QLineEdit {
+                background: #11151b;
+                border: 1px solid #364252;
+                border-radius: 8px;
+                padding: 7px 10px;
+                color: #e4ebf3;
+                selection-background-color: #4d8dff;
+                selection-color: #ffffff;
+            }
+            QLineEdit:focus {
+                border: 1px solid #4d8dff;
+            }
+            QComboBox, QSpinBox {
+                background: #11151b;
+                border: 1px solid #364252;
+                border-radius: 8px;
+                padding: 6px 10px;
+                color: #e4ebf3;
+            }
+            QComboBox:focus, QSpinBox:focus {
+                border: 1px solid #4d8dff;
+            }
+            QComboBox::drop-down {
+                border: none;
+                width: 24px;
+            }
+            QCheckBox {
+                color: #d8e0ea;
+                spacing: 7px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QPushButton {
+                background: #2f73e8;
+                border: 1px solid #2a64cb;
+                border-radius: 8px;
+                color: #ffffff;
+                padding: 7px 14px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background: #4080ed;
+            }
+            QPushButton:pressed {
+                background: #295fc0;
+            }
+            QRadioButton {
+                spacing: 7px;
+                color: #d8e0ea;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+                border-radius: 7px;
+                border: 1px solid #556172;
+                background: #11151b;
+            }
+            QRadioButton::indicator:checked {
+                border: 1px solid #4d8dff;
+                background: #4d8dff;
+            }
+            QSlider::groove:horizontal {
+                border: none;
+                height: 4px;
+                background: #435162;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #4d8dff;
+                border: 1px solid #3b73d7;
+                width: 15px;
+                margin: -6px 0;
+                border-radius: 7px;
+            }
+            QTableWidget {
+                background: #11151b;
+                border: 1px solid #2e3640;
+                border-radius: 8px;
+                gridline-color: #202833;
+                alternate-background-color: #191f27;
+                selection-background-color: #233c68;
+                selection-color: #f2f7ff;
+            }
+            QHeaderView::section {
+                background: #222a34;
+                color: #d2dbe6;
+                border: none;
+                border-bottom: 1px solid #2f3946;
+                border-right: 1px solid #2b3440;
+                padding: 6px;
+                font-weight: 600;
+            }
+            QMenu {
+                background: #1d2229;
+                border: 1px solid #2f3946;
+                border-radius: 8px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 18px;
+                border-radius: 6px;
+                color: #dce3eb;
+            }
+            QMenu::item:selected {
+                background: #2b436d;
+                color: #ffffff;
+            }
+        """
+
+    def changeEvent(self, event):
+        event_type = event.type()
+        if (
+            not self._is_applying_style
+            and self.theme_mode == "system"
+            and (
+                event_type == QEvent.Type.PaletteChange
+                or event_type == QEvent.Type.ApplicationPaletteChange
+            )
+        ):
+            self.apply_visual_style()
+        super().changeEvent(event)
 
     # --- Sample Tab ---
     def create_sample_tab(self):
@@ -649,7 +1069,9 @@ class SampleManagerApp(QWidget):
             fav_only = True
             form = "all"
 
-        results = self.db.search_samples(keywords, bpm_min, bpm_max, key, form, fav_only)
+        results = self.db.search_samples(
+            keywords, bpm_min, bpm_max, key, form, fav_only, self.max_results
+        )
 
         self.sample_result_table.setRowCount(0)
         self.sample_result_table.setRowCount(len(results))
@@ -682,7 +1104,9 @@ class SampleManagerApp(QWidget):
         btn = self.midi_form_filter_group.checkedButton()
         fav_only = (btn.text().lower() == "favorite") if btn else False
 
-        results = self.db.search_midi(keywords, bpm_min, bpm_max, key, fav_only)
+        results = self.db.search_midi(
+            keywords, bpm_min, bpm_max, key, fav_only, self.max_results
+        )
 
         self.midi_result_table.setRowCount(0)
         self.midi_result_table.setRowCount(len(results))
@@ -723,6 +1147,36 @@ class SampleManagerApp(QWidget):
     def set_volume(self, value):
         self.audio_output.setVolume(value / 100.0)
 
+    def open_settings(self):
+        dialog = SettingsDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        settings = dialog.get_settings()
+        self.theme_mode = settings["theme_mode"]
+        self.max_results = self._clamp_max_results(settings["max_results"])
+        self.hide_title_text = bool(settings["hide_title_text"])
+        self._apply_window_title_visibility()
+
+        target_volume = settings["default_volume"]
+        if self.volume_slider.value() != target_volume:
+            self.volume_slider.setValue(target_volume)
+        else:
+            self.set_volume(target_volume)
+
+        self.save_config()
+        self.apply_visual_style()
+        self.update_sample_results()
+        self.update_midi_results()
+
+    @staticmethod
+    def _clamp_max_results(value):
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return 2000
+        return max(100, min(parsed, 20000))
+
     def show_context_menu(self, pos, table_type):
         table = self.sample_result_table if table_type == 'samples' else self.midi_result_table
         item = table.itemAt(pos)
@@ -753,6 +1207,20 @@ class SampleManagerApp(QWidget):
                     data = json.load(f)
                     self.selected_sample_folder = data.get("sample_folder", "")
                     self.selected_midi_folder = data.get("midi_folder", "")
+                    configured_theme = data.get("theme_mode", "system")
+                    if configured_theme in {"system", "light", "dark"}:
+                        self.theme_mode = configured_theme
+                    self.max_results = self._clamp_max_results(data.get("max_results", 2000))
+                    self.hide_title_text = bool(data.get("hide_title_text", True))
+                    startup_volume = data.get("default_volume", self.volume_slider.value())
+                    if isinstance(startup_volume, int):
+                        startup_volume = max(0, min(startup_volume, 100))
+                    else:
+                        startup_volume = self.volume_slider.value()
+
+                    self._apply_window_title_visibility()
+                    self.apply_visual_style()
+                    self.volume_slider.setValue(startup_volume)
 
                     if self.selected_sample_folder:
                         self.sample_folder_label.setText(self.selected_sample_folder)
@@ -766,7 +1234,11 @@ class SampleManagerApp(QWidget):
     def save_config(self):
         data = {
             "sample_folder": self.selected_sample_folder,
-            "midi_folder": self.selected_midi_folder
+            "midi_folder": self.selected_midi_folder,
+            "theme_mode": self.theme_mode,
+            "max_results": self.max_results,
+            "hide_title_text": self.hide_title_text,
+            "default_volume": self.volume_slider.value(),
         }
         self.config_file.parent.mkdir(parents=True, exist_ok=True)
         with self.config_file.open('w', encoding='utf-8') as f:
